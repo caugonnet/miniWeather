@@ -4,7 +4,7 @@
 // under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-// SPDX-FileCopyrightText: Copyright (c) 2022-2024 NVIDIA CORPORATION & AFFILIATES.
+// SPDX-FileCopyrightText: Copyright (c) 2022-2025 NVIDIA CORPORATION & AFFILIATES.
 //
 //===----------------------------------------------------------------------===//
 
@@ -259,7 +259,7 @@ int main(int argc, char** argv) {
     if (argc >= 5) {
         int use_gpu = atoi(argv[4]);
         switch (use_gpu) {
-        case 0: where = exec_place::host; break;
+        case 0: where = exec_place::host(); break;
         case 1: where = exec_place::current_device(); break;
         case 2: where = exec_place::all_devices(); break;
         case 3: where = exec_place::repeat(exec_place::current_device(), 8); break;
