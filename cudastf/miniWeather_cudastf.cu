@@ -27,6 +27,7 @@
  */
 
 #include <cuda/experimental/stf.cuh>
+#include <cuda/experimental/__stf/nvrtc/jit_utils.cuh>
 
 #include <math.h>
 #include <stdio.h>
@@ -220,6 +221,7 @@ void simulation(context& ctx, exec_place where) {
     };
 
     ctx.finalize();
+    cudaDeviceSynchronize();
 
     gettimeofday(&stop_time, NULL);
     exe_time = (stop_time.tv_sec + (stop_time.tv_usec / 1000000.0)) -
@@ -343,6 +345,25 @@ void semi_discrete_step(exec_place& where, context& ctx, state_t& state_init, st
                         };
 }
 
+const char* header_template = R"(
+#include <cuda/experimental/__stf/utility/to_tuple.cuh>
+#include <cuda/experimental/__stf/nvrtc/slice.cuh>
+using namespace cuda::experimental::stf;
+
+const double C0 = 27.5629410929725921310572974482;    // Constant to translate potential temperature into pressure
+                                                      // (P=C0*(rho*theta)**gamma)
+const double gamm = 1.40027894002789400278940027894;  // gamma=cp/Rd , have to call this gamm because "gamma" is taken
+                                                      // (I hate C so much)
+const int hs = 2;  //"Halo" size: number of cells needed for a full "stencil" of information for reconstruction
+const int sten_size = 4;  // Size of the stencil used for interpolation
+const int NUM_VARS = 4;  // Number of fluid state variables
+const int ID_DENS = 0;   // index for density ("rho")
+const int ID_UMOM = 1;   // index for momentum in the x-direction ("rho * u")
+const int ID_WMOM = 2;   // index for momentum in the z-direction ("rho * w")
+const int ID_RHOT = 3;   // index for density * potential temperature ("rho * theta")
+)";
+
+
 // Compute the time tendencies of the fluid state using forcing in the x-direction
 
 // First, compute the flux vector at each cell interface in the x-direction (including hyperviscosity)
@@ -361,7 +382,67 @@ void compute_tendencies_x(exec_place& where, context& ctx, state_t& state, tend_
     // int i, k, ll, s, inds, indf1, indf2, indt;
     // Compute the hyperviscosity coeficient
     double hv_coef = -hv_beta * dx / (16 * dt);
+
+    if (getenv("JIT")) {
+
     // Compute fluxes in the x-direction for each cell
+    parallel_for_scope_jit(ctx, where, box(nx + 1, nz), state.l.read(), lflux.write()).set_symbol("comp_tend_x")->*[=]() {
+            ::std::ostringstream body_stream;
+            body_stream << R"(
+            (size_t i, size_t k, auto dstate, auto dflux)
+            {
+                )" << jit_typename(hy_dens_cell) << R"(hy_dens_cell{()" << jit_reduced_type_name(hy_dens_cell) << ") " << jit_reduce(hy_dens_cell) << R"(};
+                )" << jit_typename(hy_dens_theta_cell) << R"(hy_dens_theta_cell{()" << jit_reduced_type_name(hy_dens_theta_cell) << ") " << jit_reduce(hy_dens_theta_cell) << R"(};
+
+                double d3_vals[NUM_VARS], vals[NUM_VARS];
+                // Use fourth-order interpolation from four cell averages to compute the value at the interface in
+                // question
+                for (size_t ll = 0; ll < NUM_VARS; ll++) {
+                    double stencil[4];
+                    for (size_t s = 0; s < sten_size; s++) {
+                        stencil[s] = dstate(i + s, k + hs, ll);
+                    }
+                    // Fourth-order-accurate interpolation of the state
+                    vals[ll] = -stencil[0] / 12 + 7 * stencil[1] / 12 + 7 * stencil[2] / 12 - stencil[3] / 12;
+                    // First-order-accurate interpolation of the third spatial derivative of the state (for artificial
+                    // viscosity)
+                    d3_vals[ll] = -stencil[0] + 3 * stencil[1] - 3 * stencil[2] + stencil[3];
+                }
+
+                // Compute density, u-wind, w-wind, potential temperature, and pressure (r,u,w,t,p respectively)
+                double r = vals[ID_DENS] + hy_dens_cell(k + hs);
+                double u = vals[ID_UMOM] / r;
+                double w = vals[ID_WMOM] / r;
+                double t = (vals[ID_RHOT] + hy_dens_theta_cell(k + hs)) / r;
+                double p = C0 * pow((r * t), gamm);
+
+                // Compute the flux vector
+                const double hv_coef = )" << hv_coef << R"(;
+                dflux(i, k, ID_DENS) = r * u - hv_coef * d3_vals[ID_DENS];
+                dflux(i, k, ID_UMOM) = r * u * u + p - hv_coef * d3_vals[ID_UMOM];
+                dflux(i, k, ID_WMOM) = r * u * w - hv_coef * d3_vals[ID_WMOM];
+                dflux(i, k, ID_RHOT) = r * u * t - hv_coef * d3_vals[ID_RHOT];
+
+            };
+            )";
+
+           return ::std::pair(::std::string(header_template), body_stream.str());
+            };
+
+
+    // Compute fluxes in the x-direction for each cell
+    parallel_for_scope_jit(ctx, where, tend.l.shape(), tend.l.write(), lflux.read()).set_symbol("update_tend_x")->*[=]() {
+           ::std::ostringstream body_stream;
+           body_stream << R"(
+                    (size_t i, size_t k, size_t ll, auto dtend, auto dflux) {
+                         dtend(i, k, ll) = -(dflux(i + 1, k, ll) - dflux(i, k, ll)) / )" << dx << R"(;
+                    };
+           )";
+           return ::std::pair(::std::string(header_template), body_stream.str());
+    };
+
+    } else {
+
     ctx.parallel_for(policy(), where, box(nx + 1, nz), state.l.read(), lflux.write())
                     .set_symbol("comp_tend_x")
                     ->*
@@ -403,6 +484,7 @@ void compute_tendencies_x(exec_place& where, context& ctx, state_t& state, tend_
             [=] __host__ __device__(size_t i, size_t k, size_t ll, slice<double, 3> dtend, slice<const double, 3> dflux) {
                 dtend(i, k, ll) = -(dflux(i + 1, k, ll) - dflux(i, k, ll)) / dx_;
             };
+     }
 }
 
 // Compute the time tendencies of the fluid state using forcing in the z-direction
@@ -423,6 +505,70 @@ void compute_tendencies_z(exec_place& where, context& ctx, state_t& state, tend_
     auto hy_dens_int = b.hy_dens_int;
     auto hy_dens_theta_int = b.hy_dens_theta_int;
     auto hy_pressure_int = b.hy_pressure_int;
+
+    if (getenv("JIT")) {
+
+    parallel_for_scope_jit(ctx, where, box(nx, nz + 1), state.l.read(), lflux.write()).set_symbol("comp_tend_z")->*[=]() {
+            ::std::ostringstream body_stream;
+            body_stream << R"(
+            (size_t i, size_t k, auto dstate, auto dflux)
+            {
+                )" << jit_typename(hy_dens_theta_int) << R"(hy_dens_theta_int{()" << jit_reduced_type_name(hy_dens_theta_int) << ") " << jit_reduce(hy_dens_theta_int) << R"(};
+                )" << jit_typename(hy_dens_int) << R"(hy_dens_int{()" << jit_reduced_type_name(hy_dens_int) << ") " << jit_reduce(hy_dens_int) << R"(};
+                )" << jit_typename(hy_pressure_int) << R"(hy_pressure_int{()" << jit_reduced_type_name(hy_pressure_int) << ") " << jit_reduce(hy_pressure_int) << R"(};
+                const double hv_coef = )" << hv_coef << R"(;
+
+                double d3_vals[NUM_VARS], vals[NUM_VARS];
+                // Use fourth-order interpolation from four cell averages to compute the value at the interface in
+                // question
+                for (size_t ll = 0; ll < NUM_VARS; ll++) {
+                    double stencil[4];
+                    for (size_t s = 0; s < sten_size; s++) {
+                        stencil[s] = dstate(i + hs, k + s, ll);
+                    }
+                    // Fourth-order-accurate interpolation of the state
+                    vals[ll] = -stencil[0] / 12 + 7 * stencil[1] / 12 + 7 * stencil[2] / 12 - stencil[3] / 12;
+                    // First-order-accurate interpolation of the third spatial derivative of the state
+                    d3_vals[ll] = -stencil[0] + 3 * stencil[1] - 3 * stencil[2] + stencil[3];
+                }
+
+                // Compute density, u-wind, w-wind, potential temperature, and pressure (r,u,w,t,p respectively)
+                double r = vals[ID_DENS] + hy_dens_int(k);
+                double u = vals[ID_UMOM] / r;
+                double w = vals[ID_WMOM] / r;
+                double t = (vals[ID_RHOT] + hy_dens_theta_int(k)) / r;
+                double p = C0 * pow((r * t), gamm) - hy_pressure_int(k);
+
+                // Compute the flux vector with hyperviscosity
+                dflux(i, k, ID_DENS) = r * w - hv_coef * d3_vals[ID_DENS];
+                dflux(i, k, ID_UMOM) = r * w * u - hv_coef * d3_vals[ID_UMOM];
+                dflux(i, k, ID_WMOM) = r * w * w + p - hv_coef * d3_vals[ID_WMOM];
+                dflux(i, k, ID_RHOT) = r * w * t - hv_coef * d3_vals[ID_RHOT];
+            };
+            )";
+
+           return ::std::pair(::std::string(header_template), body_stream.str());
+            };
+
+
+    // Use the fluxes to compute tendencies for each cell
+    parallel_for_scope_jit(ctx, where, tend.l.shape(), tend.l.write(), lflux.read(), state.l.read()).set_symbol("update_tend_z")->*[=]() {
+           ::std::ostringstream body_stream;
+           body_stream << R"(
+                    (size_t i, size_t k, size_t ll, auto dtend, auto dflux, auto dstate) {
+                            constexpr size_t hs = )" << hs << R"(;
+                            dtend(i, k, ll) = -(dflux(i, k + 1, ll) - dflux(i, k, ll)) / )" << dz << R"(;
+
+                            if (ll == ID_WMOM) {
+                                dtend(i, k, ll) -= dstate(i + hs, k + hs, ID_DENS);
+                            }
+                    };
+           )";
+           return ::std::pair(::std::string(header_template), body_stream.str());
+    };
+
+    }
+    else {
 
     ctx.parallel_for(policy(), where, box(nx, nz + 1), state.l.read(), lflux.write())
                     .set_symbol("comp_tend_z")
@@ -456,6 +602,7 @@ void compute_tendencies_z(exec_place& where, context& ctx, state_t& state, tend_
                 dflux(i, k, ID_RHOT) = r * w * t - hv_coef * d3_vals[ID_RHOT];
             };
 
+
     // Use the fluxes to compute tendencies for each cell
     ctx.parallel_for(policy(), where, tend.l.shape(), tend.l.write(), lflux.read(), state.l.read())
                     .set_symbol("update_tend_z")
@@ -467,6 +614,8 @@ void compute_tendencies_z(exec_place& where, context& ctx, state_t& state, tend_
                                 dtend(i, k, ll) -= dstate(i + hs, k + hs, ID_DENS);
                             }
                         };
+
+    }
 }
 
 void set_halo_values_x(exec_place& where, context& ctx, state_t& state, boundaries_t& b) {
