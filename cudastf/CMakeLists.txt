@@ -19,12 +19,17 @@ endif()
 
 # If you're building an executable
 add_executable(miniWeather_cudastf miniWeather_cudastf.cu)
+add_executable(miniWeather_cudastf_jit miniWeather_cudastf_jit.cu)
 
 target_link_libraries(miniWeather_cudastf PUBLIC cuda)
+target_link_libraries(miniWeather_cudastf_jit PUBLIC cuda)
 
 if (CMAKE_CUDA_COMPILER)
     target_compile_options(miniWeather_cudastf PUBLIC $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
     target_compile_options(miniWeather_cudastf PUBLIC $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
+    target_compile_options(miniWeather_cudastf_jit PUBLIC $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
+    target_compile_options(miniWeather_cudastf_jit PUBLIC $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 endif()
 
-target_link_libraries(miniWeather_cudastf PRIVATE CCCL::CCCL CCCL::cudax nvrtc)
+target_link_libraries(miniWeather_cudastf PRIVATE CCCL::CCCL CCCL::cudax)
+target_link_libraries(miniWeather_cudastf_jit PRIVATE CCCL::CCCL CCCL::cudax nvrtc)
