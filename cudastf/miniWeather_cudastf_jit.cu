@@ -407,12 +407,15 @@ void compute_tendencies_x(exec_place& where, context& ctx, state_t& state, tend_
 
     // Compute fluxes in the x-direction for each cell
     parallel_for_scope_jit(ctx, where, box(nx + 1, nz), state.l.read(), lflux.write()).set_symbol("comp_tend_x")->*[=]() {
+            jit_adapter jhy_dens_cell{hy_dens_cell};
+            jit_adapter jhy_dens_theta_cell{hy_dens_theta_cell};
+
             ::std::ostringstream body_stream;
             body_stream << R"(
             (size_t i, size_t k, auto dstate, auto dflux)
             {
-                )" << jit_typename(hy_dens_cell) << R"(hy_dens_cell{()" << jit_reduced_type_name(hy_dens_cell) << ") " << jit_reduce(hy_dens_cell) << R"(};
-                )" << jit_typename(hy_dens_theta_cell) << R"(hy_dens_theta_cell{()" << jit_reduced_type_name(hy_dens_theta_cell) << ") " << jit_reduce(hy_dens_theta_cell) << R"(};
+                )" << jhy_dens_cell.kernel_side_t_name() << R"(hy_dens_cell{()" << jhy_dens_cell.kernel_param_t_name() << ") " << jhy_dens_cell.to_kernel_arg() << R"(};
+                )" << jhy_dens_theta_cell.kernel_side_t_name() << R"(hy_dens_theta_cell{()" << jhy_dens_theta_cell.kernel_param_t_name() << ") " << jhy_dens_theta_cell.to_kernel_arg() << R"(};
 
                 double d3_vals[NUM_VARS], vals[NUM_VARS];
                 // Use fourth-order interpolation from four cell averages to compute the value at the interface in
@@ -443,7 +446,7 @@ void compute_tendencies_x(exec_place& where, context& ctx, state_t& state, tend_
                 dflux(i, k, ID_WMOM) = r * u * w - hv_coef * d3_vals[ID_WMOM];
                 dflux(i, k, ID_RHOT) = r * u * t - hv_coef * d3_vals[ID_RHOT];
 
-            };
+            }
             )";
 
            return ::std::pair(::std::string(header_template), body_stream.str());
@@ -483,13 +486,17 @@ void compute_tendencies_z(exec_place& where, context& ctx, state_t& state, tend_
     auto hy_pressure_int = b.hy_pressure_int;
 
     parallel_for_scope_jit(ctx, where, box(nx, nz + 1), state.l.read(), lflux.write()).set_symbol("comp_tend_z")->*[=]() {
+            jit_adapter jhy_dens_theta_int{hy_dens_theta_int};
+            jit_adapter jhy_dens_int{hy_dens_int};
+            jit_adapter jhy_pressure_int{hy_pressure_int};
+
             ::std::ostringstream body_stream;
             body_stream << R"(
             (size_t i, size_t k, auto dstate, auto dflux)
             {
-                )" << jit_typename(hy_dens_theta_int) << R"(hy_dens_theta_int{()" << jit_reduced_type_name(hy_dens_theta_int) << ") " << jit_reduce(hy_dens_theta_int) << R"(};
-                )" << jit_typename(hy_dens_int) << R"(hy_dens_int{()" << jit_reduced_type_name(hy_dens_int) << ") " << jit_reduce(hy_dens_int) << R"(};
-                )" << jit_typename(hy_pressure_int) << R"(hy_pressure_int{()" << jit_reduced_type_name(hy_pressure_int) << ") " << jit_reduce(hy_pressure_int) << R"(};
+                )" << jhy_dens_theta_int.kernel_side_t_name() << R"(hy_dens_theta_int{()" << jhy_dens_theta_int.kernel_param_t_name() << ") " << jhy_dens_theta_int.to_kernel_arg() << R"(};
+                )" << jhy_dens_int.kernel_side_t_name() << R"(hy_dens_int{()" << jhy_dens_int.kernel_param_t_name() << ") " << jhy_dens_int.to_kernel_arg() << R"(};
+                )" << jhy_pressure_int.kernel_side_t_name() << R"(hy_pressure_int{()" << jhy_pressure_int.kernel_param_t_name() << ") " << jhy_pressure_int.to_kernel_arg() << R"(};
                 const double hv_coef = )" << hv_coef << R"(;
 
                 double d3_vals[NUM_VARS], vals[NUM_VARS];
@@ -568,13 +575,17 @@ void set_halo_values_x(exec_place& where, context& ctx, state_t& state, boundari
 
     if (myrank == 0) {
         parallel_for_scope_jit(ctx, where, box(nz, hs), state.l.rw()).set_symbol("set halo x(2)")->*[=]() {
+            jit_adapter jhy_dens_cell{hy_dens_cell};
+            jit_adapter jhy_dens_theta_cell{hy_dens_theta_cell};
+
             ::std::ostringstream body_stream;
             body_stream << R"(
                  (size_t k, size_t i, auto dstate) {
                     double z = ((double) )" << k_beg << R"( + (double) k + 0.5) * )" << dz << R"(;
                     if (fabs(z - 3.0 * zlen / 4.0) <= zlen / 16.0) {
-                        )" << jit_typename(hy_dens_cell) << R"(hy_dens_cell{()" << jit_reduced_type_name(hy_dens_cell) << ") " << jit_reduce(hy_dens_cell) << R"(};
-                        )" << jit_typename(hy_dens_theta_cell) << R"(hy_dens_theta_cell{()" << jit_reduced_type_name(hy_dens_theta_cell) << ") " << jit_reduce(hy_dens_theta_cell) << R"(};
+                )" << jhy_dens_cell.kernel_side_t_name() << R"(hy_dens_cell{()" << jhy_dens_cell.kernel_param_t_name() << ") " << jhy_dens_cell.to_kernel_arg() << R"(};
+                )" << jhy_dens_theta_cell.kernel_side_t_name() << R"(hy_dens_theta_cell{()" << jhy_dens_theta_cell.kernel_param_t_name() << ") " << jhy_dens_theta_cell.to_kernel_arg() << R"(};
+
                         dstate(i, k + hs, ID_UMOM) = (dstate(i, k + hs, ID_DENS) + hy_dens_cell(k + hs)) * 50.;
                         dstate(i, k + hs, ID_RHOT) =
                                 (dstate(i, k + hs, ID_DENS) + hy_dens_cell(k + hs)) * 298. - hy_dens_theta_cell(k + hs);
