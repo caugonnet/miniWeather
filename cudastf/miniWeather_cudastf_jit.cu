@@ -379,7 +379,7 @@ void semi_discrete_step(exec_place& where, context& ctx, state_t& state_init, st
                             constexpr double hs = )" << hs << R"(;
                             constexpr double dt = )" << dt << R"(;
                             dstate_out(i + hs, k + hs, ll) = dstate_init(i + hs, k + hs, ll) + dt * dtend(i, k, ll);
-            };
+            }
         )";
         return ::std::pair(::std::string(header_template), body_stream.str());
     };
@@ -459,7 +459,7 @@ void compute_tendencies_x(exec_place& where, context& ctx, state_t& state, tend_
            body_stream << R"(
                     (size_t i, size_t k, size_t ll, auto dtend, auto dflux) {
                          dtend(i, k, ll) = -(dflux(i + 1, k, ll) - dflux(i, k, ll)) / )" << dx << R"(;
-                    };
+                    }
            )";
            return ::std::pair(::std::string(header_template), body_stream.str());
     };
@@ -525,7 +525,7 @@ void compute_tendencies_z(exec_place& where, context& ctx, state_t& state, tend_
                 dflux(i, k, ID_UMOM) = r * w * u - hv_coef * d3_vals[ID_UMOM];
                 dflux(i, k, ID_WMOM) = r * w * w + p - hv_coef * d3_vals[ID_WMOM];
                 dflux(i, k, ID_RHOT) = r * w * t - hv_coef * d3_vals[ID_RHOT];
-            };
+            }
             )";
 
            return ::std::pair(::std::string(header_template), body_stream.str());
@@ -543,7 +543,7 @@ void compute_tendencies_z(exec_place& where, context& ctx, state_t& state, tend_
                             if (ll == ID_WMOM) {
                                 dtend(i, k, ll) -= dstate(i + hs, k + hs, ID_DENS);
                             }
-                    };
+                    }
            )";
            return ::std::pair(::std::string(header_template), body_stream.str());
     };
