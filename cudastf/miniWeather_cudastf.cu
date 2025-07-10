@@ -684,7 +684,7 @@ void init(exec_place& where, context& ctx, state_t& state, state_t& state_tmp, b
     b.hy_pressure_int = b.flhy_pressure_int.get(dplace).first;
 
     // Ensure get operations are completed
-    cuda_safe_call(cudaStreamSynchronize(ctx.task_fence()));
+    cuda_safe_call(cudaStreamSynchronize(ctx.fence()));
 }
 
 // This test case is initially balanced but injects fast, cold air from the left boundary near the model top
